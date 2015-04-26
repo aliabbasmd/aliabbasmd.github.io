@@ -1,0 +1,344 @@
+---
+title: "Bicep curl analysis"
+author: "Abbas Ali"
+date: "Wednesday, April 22, 2015"
+output: html_document
+---
+##Background 
+Ugilino et al (1) have put together data from sensors to enable analysis of human activity. Their subjects performed bicep curls in the correct manner (Class A) and incorrectly (Classes B-E). Data is stored in training and test datasets. The purpose of this analysis is to use machine learning techniques to develop an appropriate model to represent the data. 
+Data Import and assessment of missing values 
+The training dataset was imported into R.  An initial assessment of whether there was information in the missingness showed the following. 
+```{r}
+library(DoParallel)
+pml<-read.table("c:/r/Machine learning/pml-training.csv",sep=",",header=TRUE)
+row.has.na <- apply(pml, 1, function(x){any(is.na(x))})
+sum(row.has.na)
+pmlnA<-subset(pml,classe=="A")
+row.has.na <- apply(pmlnA, 1, function(x){any(is.na(x))})
+A<-sum(row.has.na)
+pmlnB<-subset(pml,classe=="B")
+row.has.na <- apply(pmlnB, 1, function(x){any(is.na(x))})
+B<-sum(row.has.na)
+pmlnC<-subset(pml,classe=="C")
+row.has.na <- apply(pmlnC, 1, function(x){any(is.na(x))})
+C<-sum(row.has.na)
+pmlnD<-subset(pml,classe=="D")
+row.has.na <- apply(pmlnD, 1, function(x){any(is.na(x))})
+D<-sum(row.has.na)
+pmlnE<-subset(pml,classe=="E")
+row.has.na <- apply(pmlnE, 1, function(x){any(is.na(x))})
+E<-sum(row.has.na)
+nabyclasse<-cbind(A,B,C,D,E)
+nabyclasse
+```
+
+On reading the data in and assessing NA values, there were 19,216 NA overall, of which classe A had 28.5% (5471) compared to 16 to 18% for classe B,C,D and E (3718,3352,3147,3528). Thus there is information in the missing values (informational missingness).
+
+##Exploratory Data Analysis 
+The first six columns of the data had ID variables. The last column had the class variable (outcome). The remainder were potential features. Due to the large number of features it was not possible to use a pairs plot on them. However a small most of features was examined graphically in  a stepwise manner going sensor by sensor. 
+```{r, echo=FALSE}
+library(caret)
+library(lattice)
+library(MASS)
+pml[c(1),c(8,9,10)]
+correlationMatrix <- cor(pml[,c(40:45)])
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.5)
+#Highly correlated variables
+pml[c(1),c(8,9,10,40,41,42,50,51,84,85,86,113,115,152,153)]
+pml1<-pml[,c(7:46)]
+pmlc<-data.frame(pml$classe)
+pml1<-cbind(pml1,pmlc)
+featurePlot(x=pml1[,c("roll_belt","pitch_belt","yaw_belt","total_accel_belt")],
+            y=pml1$pml.classe,
+            plot="pairs")
+```
+Using a stepwise approach and the correlationMatrix a high correlation was found for several variables listed above. A sample of the correlations was graphically explored most variables did not appear to have a linear relationship. Scatterplots showed a few outliers. Once the highly correlated predictors were identified they were removed.
+```{r, echo=FALSE}
+correlationMatrix <- cor(pmln[,1:123],use="complete.obs")
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.75)
+highlyCorrelated
+pml1<-pml[,-highlyCorrelated]
+```
+
+The data had too many predictors to examine visually thus it was decided to use PCA.
+
+```{r, echo=FALSE}
+boxplot(pitch_belt~pml.classe,data=pml1,notch=TRUE)
+pml1$roll_yaw<-(pml$roll_belt+pml$yaw_belt)
+p<-ggplot(pml1, aes(factor(classe),roll_yaw))+geom_jitter(aes(fill=classe))
+p
+```
+The plots above show data is distributed in clumps for a lot of the predictor variables.
+```{r, echo=FALSE}
+#Include only numeric values
+pmlnum<-sapply(pml1,is.numeric)
+pmln<-pml1[,pmlnum]
+classe<-pml[,160]
+pmln<-cbind(pmln,classe)
+inTrain<-createDataPartition(y=pml$classe,p=0.75,list=FALSE)
+pml<-pml[inTrain]
+#Bagtree imputation of na
+
+cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+preProc<-preProcess(method="bagImpute",pmln)
+pmln<-predict(preProc,pmln)
+stopCluster(cluster)
+pmln<-pmln[,7:115]
+skewValues<-apply(pmln,2,skewness)
+skewed<-as.table(skewValues[which(skewValues!=0)])
+dim(skewed)
+```
+ variables were skewed thus we will center scale and transform data.
+```{r, echo=FALSE}
+cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+trans<-preProcess(pmln, method=c("BoxCox","center","scale","pca"))
+preProcess.default(x=pmln,method = c("BoxCox","center","scale", "pca"))
+transformed<-predict(trans,pmln)
+stopCluster(cluster)
+dim(transformed)
+```
+
+ variables capture 95% of the variance.
+##Principle Component Analysis 
+On PCA 38 components accounted for 95% of the variability in the data.  The contribution of the components to the variability of the data was assessed using a screeplot. 
+
+# Principal component analysis
+```{r, echo=FALSE}
+X<-pmln
+pca1 <- princomp(X, scores=TRUE, cor=TRUE) 
+
+summary(pca1) 
+
+# Loadings of principal components 
+
+loadings(pca1) 
+
+#pca1$loadings 
+
+# Scree plot of eigenvalues 
+
+plot(pca1) 
+
+screeplot(pca1, type="line", main="Scree Plot") 
+
+
+# Scores of the components 
+
+#pca1$scores[1:10,] 
+```
+Most of the variablitiy is captured by the first 7 PCA. Now to proceed with machine learning
+```{r, echo=FALSE}
+#Setting up for Models
+classe<-pml[,c(160)]
+transa<-transformed[,c(1:10)]
+trans1<-cbind(transa,classe)
+#Keeping the first ten Prinicpal Components
+
+#To reduce processing time a sample taken to train
+InTrain<-createDataPartition(y=trans1$classe,p=0.6,list=FALSE)
+trans1<-trans1[InTrain,]
+fitControl <- trainControl(## 10-fold CV
+    method = "repeatedcv",
+    number = 10,
+    classProbs=TRUE,
+    repeats = 10)
+#Model 1    
+set.seed(2)
+cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+svmPCAFit <- train(classe~.,data=trans1,
+                   method = "svmRadial",
+                    metric="ROC",                
+                   trControl = fitControl)
+                   stopCluster(cluster)
+#Model 2
+set.seed(2)
+cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+
+gbmFit1 <- train(classe ~ ., data = trans1,
+                 method = "gbm",
+                 metric="ROC",
+                 trControl = fitControl,
+                 verbose = FALSE)
+                   stopCluster(cluster)
+ #Model 3
+ set.seed(2)
+ cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+rdaFit <- train(classe ~ ., data = trans1,
+                 method = "rda",
+                 metric="ROC",
+                 trControl = fitControl,
+                 tuneLength = 4)
+stopCluster(cluster) 
+
+#Model 4 Random Forest Model
+ set.seed(2)
+ cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+RFit<-train(classe~.,data=trans1,
+                  method="rf",
+                  metric="ROC",
+                  trControl=fitControl,
+                  prox=TRUE,allowParallel=TRUE)
+ stopCluster(cluster)
+```
+In order to select a model to tune data were preprocessed with PCA using the default settings after imputing the NA using a bagImpute method. SVG, GBM, RDA and RF models were used with 10 re-samples each. 
+```{r, echo=FALSE}
+
+#Compare models 
+resamp <- resamples(list(SVM = svmPCAFit,
+                         GBM=gbmFit1,
+                         RDA=rdaFit,
+                         RF=RFit ))
+                         
+resamp
+summary(resamp)
+
+modelDifferences<-diff(resamp)
+summary(modelDifferences)
+
+
+difValues <- diff(resamp)
+trellis.par.set(theme1)
+bwplot(resamp, layout = c(3, 1))
+trellis.par.set(theme1)
+bwplot(difValues, layout = c(3, 1))
+```
+The RDA model was chosen as it was non-parametric and not likely to be changed due to the outliers. 
+```{r, echo=FALSE}
+#Tuning RDA
+#Model 1 no pre processing
+
+pml<-pml[,7:160]
+pmln<-apply(!is.na(pml),2,sum)>19621
+pml2<-pml[pmln]
+InTrain<-createDataPartition(y=pml$classe,p=0.4,list=FALSE)
+pml1<-pml2[InTrain,]
+
+fitControl <- trainControl(## 10-fold CV
+    method = "repeatedcv",
+    number = 10,
+    classProbs=TRUE,
+    repeats = 10)
+
+ set.seed(2)
+ cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+rdaFit1 <- train(classe ~ ., data = trans1,
+                 method = "rda",
+                 metric="ROC",
+                 trControl = fitControl,
+                 tuneLength = 4)
+stopCluster(cluster) 
+
+
+#Model 3 with knn to impute data
+library(RANN)
+cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+pmlnum<-sapply(pml,is.numeric)
+pmln<-pml[,pmlnum]
+preProc<-preProcess(method="knnImpute",pmln,na.remove=TRUE,k=5)
+pmln<-predict(preProc,pmln)
+stopCluster(cluster)
+#Transform variables
+cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+trans<-preProcess(pmln, method=c("BoxCox","center","scale","pca"))
+preProcess.default(x=pmln,method = c("BoxCox","center","scale", "pca"))
+transformed<-predict(trans,pmln)
+classe<-pml[,c(154)]
+transa<-transformed[,c(1:10)]
+trans1<-cbind(transa,classe)
+
+set.seed(2)
+ cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+rdaFit3 <- train(classe ~ ., data = trans1,
+                 method = "rda",
+                 metric="ROC",
+                 trControl = fitControl,
+                 tuneLength = 6)
+stopCluster(cluster) 
+
+resamp <- resamples(list(RDA1=rdaFit,
+                         RDA=rdaFit1,
+                         RDA3=rdaFit3))
+modelDifferences<-diff(resamp)
+summary(modelDifferences)
+summary(resamp)
+```
+##Model Tuning
+The rda model with knn imputation and tunelength=6 was applied to the data. The baseline RDA model did not have any data transformations. Basically the data with NA was dropped and processed using the caret package. Model 2 had bagImputation. Model 3 had data imputed by knn imputation. These models were compared. 
+```{r, echo=FALSE}
+#pml<-read.table("c:/r/Machine learning/pml-training.csv",sep=",",header=TRUE)
+#pml<-pml[,7:160]
+#pmlnum<-sapply(pml1,is.numeric)
+#pmln<-pml1[,pmlnum]
+#InTrain<-createDataPartition(y=pml$classe,p=0.4,list=FALSE)
+#Recall how the test and train sets were created
+pml1<-pml2[InTrain,]
+pml<-pml[-inTrain,]
+classe<-pml$classe
+
+#Model 3 with knn to impute data
+library(RANN)
+cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+pmlnum<-sapply(pml,is.numeric)
+pmln<-pml[,pmlnum]
+#knn imputation
+cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+preProc<-preProcess(method="knnImpute",pmln,na.remove=TRUE,k=5)
+pmln<-predict(preProc,pmln)
+stopCluster(cluster)
+#Data transformation
+cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+trans<-preProcess(pmln, method=c("BoxCox","center","scale","pca"))
+preProcess.default(x=pmln,method = c("BoxCox","center","scale", "pca"))
+transformed<-predict(trans,pmln)
+classe<-pml[,c(154)]
+#Select first 10 Principal Components
+transa<-transformed[,c(1:10)]
+trans1<-cbind(transa,classe)
+#Set up for model
+fitControl <- trainControl(## 10-fold CV
+    method = "repeatedcv",
+    number = 10,
+    classProbs=TRUE,
+    repeats = 10)
+set.seed(2)
+#Run the model 
+cluster             <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+rdaFit3 <- train(classe ~ ., data = trans1,
+                 method = "rda",
+                 metric="ROC",
+                 trControl = fitControl,
+                 tuneLength = 6)
+stopCluster(cluster) 
+#Creating the confusion matrix
+ whichTwoPct <- tolerance(rdaFit3$results, metric = "Accuracy",tol=2,maximize=TRUE)
+whichTwoPct
+cat("best model within 2 pct of best:\n")
+rdaFit3$results[whichTwoPct,1:6]
+
+testPred <- predict(rdaFit3, trans1)
+ confusionMatrix(testPred, trans1$classe)
+getTrainPerf(rdaFit3)
+evalResults <- data.frame(Class = trans1$classe)
+evalResults$rdaFit3 <- predict(rdaFit3, trans1, type = "prob")[,"A"]
+head(evalResults)
+trellis.par.set(caretTheme())
+liftData <- lift(classe ~ rdaFit3, data = evalResults)
+plot(liftData, values = 60, auto.key = list(columns = 2,
+                                            lines = TRUE,
+                                            points = FALSE))
+```
+
